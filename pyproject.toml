@@ -1,0 +1,26 @@
+[project]
+name = "finetune-practice-lesson"
+version = "0.1.0"
+description = "LLM Fine Tuning Practice Lesson"
+authors = [
+]
+readme = "README.md"
+requires-python = ">=3.12,<4"
+dependencies = [
+    "torch (~=2.7)",
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.dependencies]
+torch = { version = "~=2.12", source = "PyTorch-Cuda126" }
+
+[[tool.poetry.source]]
+name = "PyTorch-Cuda126"
+url = "https://download.pytorch.org/whl/cu126"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
