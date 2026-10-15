@@ -1,34 +1,26 @@
-# -*- coding: utf-8 -*-
-"""
-Qwen3-0.6B 法律选择题 LoRA 微调（基于 DISC-Law-SFT 的 exam 类型）。
-
-和医学项目 train_qwen3.py 几乎一样，只改了数据路径和输出路径，
-并且训练过程会记录到日志文件 law_data/training_log.txt。
-
-用法：先 python prepare_data_law.py，再 python train_qwen3_law.py
-"""
 import glob
 import json
 import os
+
 import pandas as pd
 import torch
 from datasets import Dataset
-from modelscope import snapshot_download, AutoTokenizer
+from modelscope import AutoTokenizer, snapshot_download
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
-    TrainingArguments,
-    Trainer,
     DataCollatorForSeq2Seq,
+    Trainer,
     TrainerCallback,
+    TrainingArguments,
 )
 
 # ================= 可配置参数 =================
 MODEL_ID = "Qwen/Qwen3-0.6B"
-TRAIN_FILE = "datasets/law_train.jsonl"        # 训练数据
-DEV_FILE = "datasets/law_val.jsonl"            # 验证集
-OUTPUT_DIR = "./output/law-qwen3"              # 输出到 output 下的新文件夹
-LOG_FILE = "datasets/DISC-Law-SFT/training_log.txt"         # 训练日志文件
+TRAIN_FILE = "datasets/law_train.jsonl"  # 训练数据
+DEV_FILE = "datasets/law_val.jsonl"  # 验证集
+OUTPUT_DIR = "./output/law-qwen3"  # 输出到 output 下的新文件夹
+LOG_FILE = "datasets/DISC-Law-SFT/training_log.txt"  # 训练日志文件
 MAX_LENGTH = 512
 
 LORA_R = 8
@@ -36,7 +28,7 @@ LORA_ALPHA = 32
 LORA_DROPOUT = 0.1
 
 LR = 2e-4
-EPOCHS = 2      # 医学项目经验：2 轮最佳，3 轮会过拟合
+EPOCHS = 2  # 医学项目经验：2 轮最佳，3 轮会过拟合
 BATCH_SIZE = 4
 GRAD_ACCUM = 4
 # =============================================
@@ -60,8 +52,12 @@ class LogToFileCallback(TrainerCallback):
 # 1. 下载并加载模型
 print("正在下载模型 ...")
 model_dir = snapshot_download(MODEL_ID, cache_dir="./models")
-tokenizer = AutoTokenizer.from_pretrained(model_dir, use_fast=False, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(model_dir, device_map="auto", dtype=torch.bfloat16)
+tokenizer = AutoTokenizer.from_pretrained(
+    model_dir, use_fast=False, trust_remote_code=True
+)
+model = AutoModelForCausalLM.from_pretrained(
+    model_dir, device_map="auto", dtype=torch.bfloat16
+)
 model.enable_input_require_grads()
 
 
@@ -80,11 +76,15 @@ def process_func(example):
     )
     full_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"]
     prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
-    labels = [-100] * len(prompt_ids) + full_ids[len(prompt_ids):]
+    labels = [-100] * len(prompt_ids) + full_ids[len(prompt_ids) :]
     if len(full_ids) > MAX_LENGTH:
         full_ids = full_ids[:MAX_LENGTH]
         labels = labels[:MAX_LENGTH]
-    return {"input_ids": full_ids, "attention_mask": [1] * len(full_ids), "labels": labels}
+    return {
+        "input_ids": full_ids,
+        "attention_mask": [1] * len(full_ids),
+        "labels": labels,
+    }
 
 
 train_df = pd.read_json(TRAIN_FILE, lines=True)
@@ -101,7 +101,15 @@ print(f"验证数据：{len(eval_dataset)} 条")
 # 3. LoRA 配置
 config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],
     inference_mode=False,
     r=LORA_R,
     lora_alpha=LORA_ALPHA,
@@ -119,7 +127,7 @@ args = TrainingArguments(
     learning_rate=LR,
     num_train_epochs=EPOCHS,
     logging_steps=10,
-    save_steps=100,          # 每 100 步存一次档（更频繁，重启损失更小）
+    save_steps=100,  # 每 100 步存一次档（更频繁，重启损失更小）
     eval_strategy="steps",
     eval_steps=200,
     gradient_checkpointing=True,
@@ -141,7 +149,7 @@ print("开始训练 ...")
 # 自动判断：有存档点就接着练，没有就从头开始
 checkpoints = glob.glob(os.path.join(OUTPUT_DIR, "checkpoint-*"))
 if checkpoints:
-    print(f"发现存档点，从最近的继续训练 ...")
+    print("发现存档点，从最近的继续训练 ...")
     result = trainer.train(resume_from_checkpoint=True)
 else:
     print("无存档点，从头开始训练 ...")

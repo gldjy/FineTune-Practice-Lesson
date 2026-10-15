@@ -1,25 +1,23 @@
-# -*- coding: utf-8 -*-
-"""
-用微调后的模型做法律选择题测试，对比微调前后，计算准确率。
-（法律选择题是客观题，用准确率评估，和医学项目完全一样）
-
-用法：python test_qwen3_law.py
-"""
 import json
 import re
+
 import torch
-from transformers import AutoModelForCausalLM
+from modelscope import AutoTokenizer, snapshot_download
 from peft import PeftModel
-from modelscope import snapshot_download, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
 MODEL_ID = "Qwen/Qwen3-0.6B"
-ADAPTER = "output/law-qwen3/final"          # 训练好的 LoRA 适配器
-TEST_FILE = "datasets/law_test.jsonl"       # 法律测试集（未参与训练）
-NUM_TEST = 1000                             # 测前 1000 条
+ADAPTER = "output/law-qwen3/final"  # 训练好的 LoRA 适配器
+TEST_FILE = "datasets/law_test.jsonl"  # 法律测试集（未参与训练）
+NUM_TEST = 1000  # 测前 1000 条
 
 base_dir = snapshot_download(MODEL_ID, cache_dir="./models")
-tokenizer = AutoTokenizer.from_pretrained(base_dir, use_fast=False, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(base_dir, dtype=torch.bfloat16, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(
+    base_dir, use_fast=False, trust_remote_code=True
+)
+model = AutoModelForCausalLM.from_pretrained(
+    base_dir, dtype=torch.bfloat16, device_map="auto"
+)
 
 
 def generate_answer(model, instruction, input_text):
@@ -33,7 +31,7 @@ def generate_answer(model, instruction, input_text):
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
     with torch.no_grad():
         outputs = model.generate(**inputs, max_new_tokens=64, do_sample=False)
-    new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    new_tokens = outputs[0][inputs["input_ids"].shape[1] :]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
@@ -59,12 +57,14 @@ def run_test(model, out_file, label):
         expected = d["output"][0]  # 正确答案字母，如 "A"
         pred = generate_answer(model, d["instruction"], d["input"])
         pred_letter = extract_letter(pred)
-        ok = (pred_letter == expected)
+        ok = pred_letter == expected
         if ok:
             correct += 1
         mark = "对" if ok else "错"
-        line = (f"[{i+1:3d}/{len(test_data)}] 正确答案={expected}  模型答={pred_letter}  "
-                f"{mark}  | 原始输出: {pred[:30]}")
+        line = (
+            f"[{i+1:3d}/{len(test_data)}] 正确答案={expected}  模型答={pred_letter}  "
+            f"{mark}  | 原始输出: {pred[:30]}"
+        )
         print(line)
         result_lines.append(line)
         result_lines.append(f"    题目: {d['input'][:100]}")

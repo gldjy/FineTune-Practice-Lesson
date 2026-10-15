@@ -1,8 +1,6 @@
-"""
-用法：python prepare_data_law.py
-"""
 import json
 import random
+
 import pandas as pd
 
 # ---- 原始数据路径 ----
@@ -14,9 +12,9 @@ OUT_VAL = "datasets/law_val.jsonl"
 OUT_TEST = "datasets/law_test.jsonl"
 
 # ---- 切分数量（可用一小部分，改这里）----
-TRAIN_SIZE = 15000   # 训练集（总共 21054 条选择题，取 1.5 万）
-VAL_SIZE = 500       # 验证集
-TEST_SIZE = 1000     # 测试集
+TRAIN_SIZE = 15000  # 训练集（总共 21054 条选择题，取 1.5 万）
+VAL_SIZE = 500  # 验证集
+TEST_SIZE = 1000  # 测试集
 
 # ---- 随机种子（保证每次切分结果一样）----
 SEED = 42
@@ -31,8 +29,8 @@ SYSTEM_PROMPT = (
 def parse_input(text):
     """去掉第一行指令，只留「题目 + 选项」部分"""
     if "\n" in text:
-        text = text.split("\n", 1)[1]   # 第一行是「请给出...推理过程：」，去掉
-    text = text.replace("问题：", "题目：", 1)   # 统一叫「题目」
+        text = text.split("\n", 1)[1]  # 第一行是「请给出...推理过程：」，去掉
+    text = text.replace("问题：", "题目：", 1)  # 统一叫「题目」
     return text.strip()
 
 
@@ -51,11 +49,13 @@ def main():
     # 转成 instruction/input/output
     items = []
     for _, row in exam.iterrows():
-        items.append({
-            "instruction": SYSTEM_PROMPT,
-            "input": parse_input(row["input"]),
-            "output": parse_output(row["output"]),
-        })
+        items.append(
+            {
+                "instruction": SYSTEM_PROMPT,
+                "input": parse_input(row["input"]),
+                "output": parse_output(row["output"]),
+            }
+        )
 
     # 打乱顺序
     random.seed(SEED)
@@ -63,13 +63,12 @@ def main():
 
     # 切分 train / val / test
     train = items[:TRAIN_SIZE]
-    val = items[TRAIN_SIZE:TRAIN_SIZE + VAL_SIZE]
-    test = items[TRAIN_SIZE + VAL_SIZE:TRAIN_SIZE + VAL_SIZE + TEST_SIZE]
+    val = items[TRAIN_SIZE : TRAIN_SIZE + VAL_SIZE]
+    test = items[TRAIN_SIZE + VAL_SIZE : TRAIN_SIZE + VAL_SIZE + TEST_SIZE]
 
     for path, data in [(OUT_TRAIN, train), (OUT_VAL, val), (OUT_TEST, test)]:
         with open(path, "w", encoding="utf-8") as f:
-            for item in data:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            f.writelines(json.dumps(item, ensure_ascii=False) + "\n" for item in data)
         print(f"已生成 {path}：{len(data)} 条")
 
 
