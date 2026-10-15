@@ -7,8 +7,13 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12,<4"
 dependencies = [
+    "datasets (~=5.0)",
     "modelscope (~=1.40)",
-    "torch (~=2.7)",
+    "numpy (~=2.5)",
+    "pandas (~=3.0)",
+    "peft (~=0.20.0)",
+    "torch (~=2.12)",
+    "transformers (~=5.16)",
 ]
 
 [tool.poetry]
