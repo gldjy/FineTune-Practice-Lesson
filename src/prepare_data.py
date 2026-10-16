@@ -1,5 +1,6 @@
 import json
 import random
+import re
 
 import pandas as pd
 
@@ -26,10 +27,23 @@ SYSTEM_PROMPT = (
 )
 
 
+# 源数据把「请给出...答案和解析」这类指令混在题面里：有的在开头，有的在结尾，
+# 而且不是每道题都有，所以只能按内容判断，不能按行号删
+INSTRUCTION_KEYWORDS = ("单选", "多选", "选择题", "解析", "答案")
+
+
+def is_instruction(line):
+    """判断一行是不是源数据自带的指令（而不是题干或选项）"""
+    line = line.strip()
+    # 指令都是短句；选项行（A. / B. 开头）里的关键词不算
+    if len(line) > 30 or re.match(r"^[A-D][\.、．]", line):
+        return False
+    return any(keyword in line for keyword in INSTRUCTION_KEYWORDS)
+
+
 def parse_input(text):
-    """去掉第一行指令，只留「题目 + 选项」部分"""
-    if "\n" in text:
-        text = text.split("\n", 1)[1]  # 第一行是「请给出...推理过程：」，去掉
+    """去掉题面里混着的指令行，只留「题目 + 选项」部分"""
+    text = "\n".join(line for line in text.split("\n") if not is_instruction(line))
     text = text.replace("问题：", "题目：", 1)  # 统一叫「题目」
     return text.strip()
 
@@ -41,7 +55,7 @@ def parse_output(text):
 
 def main():
     print("读取 CSV ...")
-    df = pd.read_csv(RAW_CSV, encoding="utf-8", on_bad_lines="skip")
+    df = pd.read_csv(RAW_CSV, encoding="utf-8")
     # 只取 exam 类型（法律选择题）
     exam = df[df["id"].astype(str).str.startswith("exam", na=False)]
     print(f"法律选择题（exam 类型）共 {len(exam)} 条")
