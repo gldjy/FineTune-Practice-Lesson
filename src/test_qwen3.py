@@ -1,22 +1,22 @@
 import json
+import os
 import re
 
 import torch
-from modelscope import AutoTokenizer, snapshot_download
+from modelscope import AutoTokenizer
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
 
-MODEL_ID = "Qwen/Qwen3-0.6B"
+MODEL_DIR = "./qwen3"
 ADAPTER = "output/law-qwen3/final"  # 训练好的 LoRA 适配器
 TEST_FILE = "datasets/law_test.jsonl"  # 法律测试集（未参与训练）
 NUM_TEST = 1000  # 测前 1000 条
 
-base_dir = snapshot_download(MODEL_ID, cache_dir="./models")
 tokenizer = AutoTokenizer.from_pretrained(
-    base_dir, use_fast=False, trust_remote_code=True
+    MODEL_DIR, use_fast=False, trust_remote_code=True
 )
 model = AutoModelForCausalLM.from_pretrained(
-    base_dir, dtype=torch.bfloat16, device_map="auto"
+    MODEL_DIR, dtype=torch.bfloat16, device_map="auto"
 )
 
 
@@ -50,6 +50,7 @@ with open(TEST_FILE, encoding="utf-8") as f:
 
 
 def run_test(model, out_file, label):
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)  # 结果目录不存在时先建好
     model.eval()
     correct = 0
     result_lines = [f"===== {label} ====="]
