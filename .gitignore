@@ -1,4 +1,6 @@
 __pycache__/
 data/
 datasets/
+output/
+test_*/
 qwen3/

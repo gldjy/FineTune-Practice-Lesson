@@ -5,7 +5,7 @@ import os
 import pandas as pd
 import torch
 from datasets import Dataset
-from modelscope import AutoTokenizer, snapshot_download
+from modelscope import AutoTokenizer
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
@@ -16,7 +16,7 @@ from transformers import (
 )
 
 # ================= 可配置参数 =================
-MODEL_ID = "Qwen/Qwen3-0.6B"
+MODEL_DIR = "./qwen3"
 TRAIN_FILE = "datasets/law_train.jsonl"  # 训练数据
 DEV_FILE = "datasets/law_val.jsonl"  # 验证集
 OUTPUT_DIR = "./output/law-qwen3"  # 输出到 output 下的新文件夹
@@ -49,14 +49,13 @@ class LogToFileCallback(TrainerCallback):
                 f.write(json.dumps(logs, ensure_ascii=False, default=str) + "\n")
 
 
-# 1. 下载并加载模型
-print("正在下载模型 ...")
-model_dir = snapshot_download(MODEL_ID, cache_dir="./models")
+# 1. 加载模型
+print("正在加载模型 ...")
 tokenizer = AutoTokenizer.from_pretrained(
-    model_dir, use_fast=False, trust_remote_code=True
+    MODEL_DIR, use_fast=False, trust_remote_code=True
 )
 model = AutoModelForCausalLM.from_pretrained(
-    model_dir, device_map="auto", dtype=torch.bfloat16
+    MODEL_DIR, device_map="auto", dtype=torch.bfloat16
 )
 model.enable_input_require_grads()
 
@@ -123,6 +122,7 @@ model.print_trainable_parameters()
 args = TrainingArguments(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=BATCH_SIZE,
+    per_device_eval_batch_size=BATCH_SIZE,
     gradient_accumulation_steps=GRAD_ACCUM,
     learning_rate=LR,
     num_train_epochs=EPOCHS,
