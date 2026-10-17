@@ -1,4 +1,8 @@
+"""Splits the DISC-Law-SFT exam items into train/val/test JSONL files."""
+
+import argparse
 import json
+import os
 import random
 import re
 
@@ -7,22 +11,58 @@ import pandas as pd
 # ---- 原始数据路径 ----
 RAW_CSV = "datasets/DISC-Law-SFT/DISC-Law-SFT-Pair.csv"
 
-# ---- 输出路径（放在新建的数据文件夹 law_data 下）----
-OUT_TRAIN = "datasets/law_train.jsonl"
-OUT_VAL = "datasets/law_val.jsonl"
-OUT_TEST = "datasets/law_test.jsonl"
-
-# ---- 切分比例（训练 : 验证 : 测试），按总数比例全部划分 ----
-DATASET_SPLIT = (17, 1, 2)
-
-# ---- 随机种子（保证每次切分结果一样）----
-RANDOM_SEED = 42
+# Defaults for the command-line options
+DEFAULT_SPLIT_RATIO = "17,1,2"  # train:val:test
+DEFAULT_SEED = 42
 
 SYSTEM_PROMPT = (
     "你是一名法律知识问答助手。请阅读下面的法律单项选择题，"
     "从 A、B、C、D 四个选项中选出唯一正确的答案。"
     "只输出正确选项的字母和内容，不要解释，不可多选。"
 )
+
+
+def parse_split_ratio(value):
+    """Parses a "train,val,test" ratio string into a tuple of positive integers."""
+    parts = value.split(",")
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(
+            f"expected exactly 3 comma-separated parts, got {value!r}"
+        )
+    try:
+        ratio = tuple(int(part) for part in parts)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"ratio parts must be integers, got {value!r}"
+        ) from None
+    if any(part <= 0 for part in ratio):
+        raise argparse.ArgumentTypeError(f"ratio parts must be positive, got {value!r}")
+    return ratio
+
+
+def parse_args():
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Split the DISC-Law-SFT exam items into train/val/test JSONL files.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--out-dir", default="datasets", help="Directory for the generated JSONL files"
+    )
+    parser.add_argument(
+        "--split-ratio",
+        type=parse_split_ratio,
+        default=DEFAULT_SPLIT_RATIO,
+        help="Train/val/test ratio, e.g. 17,1,2",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=-1,
+        help="Maximum number of shuffled samples to use; -1 uses all",
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed")
+    return parser.parse_args()
 
 
 # 源数据把「请给出...答案和解析」这类指令混在题面里：有的在开头，有的在结尾，
@@ -51,12 +91,24 @@ def parse_output(text):
     return text.split("\n")[0].strip()
 
 
+def split_items(items, ratio):
+    """Splits shuffled items by ratio; the rounding remainder goes to the test split."""
+    total = len(items)
+    ratio_sum = sum(ratio)
+    n_train = total * ratio[0] // ratio_sum
+    n_val = total * ratio[1] // ratio_sum
+    return items[:n_train], items[n_train : n_train + n_val], items[n_train + n_val :]
+
+
 def main():
-    print("读取 CSV ...")
+    args = parse_args()
+    random.seed(args.seed)
+
+    print(f"Reading {RAW_CSV} ...")
     df = pd.read_csv(RAW_CSV, encoding="utf-8")
     # 只取 exam 类型（法律选择题）
     exam = df[df["id"].astype(str).str.startswith("exam", na=False)]
-    print(f"法律选择题（exam 类型）共 {len(exam)} 条")
+    print(f"Exam items found: {len(exam)}")
 
     # 转成 instruction/input/output
     items = []
@@ -70,23 +122,19 @@ def main():
         )
 
     # 打乱顺序
-    random.seed(RANDOM_SEED)
     random.shuffle(items)
+    if args.max_samples >= 0:
+        items = items[: args.max_samples]
+        print(f"Using the first {len(items)} shuffled samples (--max-samples)")
 
-    # 按比例切分 train / val / test（样本数由总数自动算出，不硬编码）
-    total = len(items)
-    ratio_sum = sum(DATASET_SPLIT)
-    n_train = total * DATASET_SPLIT[0] // ratio_sum
-    n_val = total * DATASET_SPLIT[1] // ratio_sum
+    train, val, test = split_items(items, args.split_ratio)
 
-    train = items[:n_train]
-    val = items[n_train : n_train + n_val]
-    test = items[n_train + n_val :]
-
-    for path, data in [(OUT_TRAIN, train), (OUT_VAL, val), (OUT_TEST, test)]:
+    os.makedirs(args.out_dir, exist_ok=True)
+    for split, data in (("train", train), ("val", val), ("test", test)):
+        path = os.path.join(args.out_dir, f"law_{split}.jsonl")
         with open(path, "w", encoding="utf-8") as f:
             f.writelines(json.dumps(item, ensure_ascii=False) + "\n" for item in data)
-        print(f"已生成 {path}：{len(data)} 条")
+        print(f"Wrote {len(data)} samples to {path}")
 
 
 if __name__ == "__main__":
