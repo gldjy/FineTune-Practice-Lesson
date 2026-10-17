@@ -63,16 +63,26 @@ poetry run python src/train_qwen3.py \
 
 ### 测试 `src/test_qwen3.py`
 
-先把原始模型跑一遍做基准，再挂上 LoRA 适配器跑一遍，结果写到 `logs/test_results/`：
+先评指定的模型，结果文件按运行时间命名写到 `logs/test_results/`：
 
 ```bash
-# 默认：使用完整测试集和 output/law-qwen3/final 适配器
+# 默认：挂 output/law-qwen3/final 适配器，评完整测试集
 poetry run python src/test_qwen3.py
 
-# 换适配器（存档点目录也可以）或换测试集
+# 只评原始模型（不挂适配器）做基准
+poetry run python src/test_qwen3.py --ckpt none
+
+# 换别的存档点或换测试集
 poetry run python src/test_qwen3.py \
-  --adapter output/law-qwen3/checkpoint-1000 \
+  --ckpt output/law-qwen3/checkpoint-1000 \
   --test-file datasets/mini/law_test.jsonl
 ```
 
-测试集会整份跑两遍（原始模型一次、LoRA 一次），全量会比较久，想先小规模验证就用上面 `datasets/mini` 那种小测试集。
+```python
+import pandas as pd
+
+d = pd.read_json("logs/test_results/test-xxxx.jsonl", lines=True)
+print(d.correct.mean())
+```
+
+全量测试会比较久，想先小规模验证就用上面 `datasets/mini` 那种小测试集。

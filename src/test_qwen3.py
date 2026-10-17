@@ -1,10 +1,11 @@
-"""Evaluation of Qwen3 and its LoRA adapter on the law multiple-choice test set."""
+"""Evaluation of Qwen3 (base model or a LoRA checkpoint) on the law multiple-choice test set."""
 
 import argparse
 import json
 import os
 import random
 import re
+from datetime import datetime
 
 import torch
 from modelscope import AutoTokenizer
@@ -22,16 +23,16 @@ ANSWER_PATTERN = re.compile(r"\b([A-D])\b")
 def parse_args():
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Evaluate Qwen3 (base model and LoRA adapter) on the law multiple-choice test set.",
+        description="Evaluate Qwen3 (base model or a LoRA checkpoint) on the law multiple-choice test set.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--model-dir", default="./qwen3", help="Path to the base model directory"
     )
     parser.add_argument(
-        "--adapter",
+        "--ckpt",
         default="output/law-qwen3/final",
-        help="Path to the trained LoRA adapter",
+        help="LoRA checkpoint directory to evaluate; pass 'none' to evaluate the base model",
     )
     parser.add_argument(
         "--test-file",
@@ -40,8 +41,8 @@ def parse_args():
     )
     parser.add_argument(
         "--result-dir",
-        default="logs/test_results",
-        help="Directory for the result text files",
+        default="logs",
+        help="Directory for the result JSONL files",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed")
     return parser.parse_args()
@@ -77,39 +78,37 @@ def generate_answer(model, tokenizer, instruction, input_text, max_new_tokens):
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
-def run_test(model, tokenizer, test_data, out_file, label, max_new_tokens):
-    """Runs one evaluation pass and writes the per-sample results to out_file."""
+def run_test(model, tokenizer, test_data, out_file, meta, max_new_tokens):
+    """Runs one evaluation pass; out_file gets one meta line plus one JSONL record per sample."""
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     model.eval()
     correct = 0
-    result_lines = [f"===== {label} ====="]
-    for i, sample in enumerate(test_data):
-        expected = sample["output"].strip()[0].upper()  # Correct letter, e.g. "A"
-        pred = generate_answer(
-            model, tokenizer, sample["instruction"], sample["input"], max_new_tokens
-        )
-        pred_letter = extract_letter(pred)
-        ok = pred_letter == expected
-        correct += int(ok)
-        line = (
-            f"[{i + 1:3d}/{len(test_data)}] answer={expected}  predicted={pred_letter}  "
-            f"{'right' if ok else 'wrong'} | output: {pred[:32].replace('\n', ' ')}"
-        )
-        print(line)
-        result_lines.append(line)
-        result_lines.append(f"    question: {sample['input'][:100]}")
-        result_lines.append("")
-
-    accuracy = correct / len(test_data)
-    summary = (
-        f"===== {label} accuracy: {correct}/{len(test_data)} = {accuracy:.2%} ====="
-    )
-    print(f"\n{summary}\n")
-    result_lines.append(summary)
     with open(out_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(result_lines))
-    print(f"Results saved to {out_file}\n")
-    return accuracy
+        f.write(json.dumps({"meta": meta}, ensure_ascii=False) + "\n")
+        for i, sample in enumerate(test_data):
+            expected = sample["output"].strip()[0].upper()  # Correct letter, e.g. "A"
+            pred = generate_answer(
+                model, tokenizer, sample["instruction"], sample["input"], max_new_tokens
+            )
+            pred_letter = extract_letter(pred)
+            ok = pred_letter == expected
+            correct += int(ok)
+            # Full question, options and model output, no truncation.
+            record = {
+                "index": i + 1,
+                "input": sample["input"],
+                "expected": expected,
+                "predicted": pred_letter,
+                "correct": ok,
+                "output": pred,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            print(
+                f"[{i + 1:3d}/{len(test_data)}] expected={expected}  "
+                f"predicted={pred_letter}  {'right' if ok else 'wrong'}"
+            )
+
+    return correct
 
 
 def main():
@@ -130,24 +129,32 @@ def main():
         args.model_dir, dtype=torch.bfloat16, device_map="auto"
     )
 
-    baseline_file = os.path.join(args.result_dir, "law_test_result_baseline.txt")
-    tuned_file = os.path.join(args.result_dir, "law_test_result.txt")
+    if args.ckpt.lower() in ("none", "-"):
+        ckpt = None  # No adapter: evaluate the base model.
+        label = "base model"
+        print("Evaluating the base model (no LoRA checkpoint) ...")
+    else:
+        ckpt = args.ckpt
+        label = "LoRA"
+        print(f"Loading LoRA checkpoint from {ckpt} ...")
+        model = PeftModel.from_pretrained(model, ckpt)
+        print("Evaluating the LoRA-tuned model ...")
 
-    print("[1/2] Evaluating the base model ...")
-    baseline_acc = run_test(
-        model, tokenizer, test_data, baseline_file, "base model", MAX_NEW_TOKENS
-    )
+    now = datetime.now()  # noqa: DTZ005
+    out_file = os.path.join(args.result_dir, f"test-{now:%Y%m%d-%H%M%S}.jsonl")
+    meta = {
+        "timestamp": now.isoformat(timespec="seconds"),
+        "ckpt": ckpt,
+        "model_dir": args.model_dir,
+        "test_file": args.test_file,
+        "seed": args.seed,
+        "samples": len(test_data),
+        "max_new_tokens": MAX_NEW_TOKENS,
+    }
+    correct = run_test(model, tokenizer, test_data, out_file, meta, MAX_NEW_TOKENS)
 
-    model = PeftModel.from_pretrained(model, args.adapter)
-    print("[2/2] Evaluating the LoRA-tuned model ...")
-    tuned_acc = run_test(
-        model, tokenizer, test_data, tuned_file, "LoRA", MAX_NEW_TOKENS
-    )
-
-    print(f"Base model accuracy: {baseline_acc:.1%}")
-    print(f"LoRA accuracy: {tuned_acc:.1%}")
-    print(f"Improvement: {tuned_acc - baseline_acc:+.1%}")
-    print(f"Results saved to {baseline_file} and {tuned_file}")
+    print(f"\n{label} accuracy: {correct}/{len(test_data)} = {correct / len(test_data):.2%}")
+    print(f"Results saved to {out_file}")
 
 
 if __name__ == "__main__":
