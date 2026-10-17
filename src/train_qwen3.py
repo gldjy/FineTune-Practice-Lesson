@@ -1,7 +1,10 @@
-import glob
+"""LoRA fine-tuning of Qwen3 on the DISC-Law-SFT multiple-choice dataset."""
+
+import argparse
 import json
 import os
 import random
+from datetime import datetime
 
 import pandas as pd
 import torch
@@ -16,37 +19,79 @@ from transformers import (
     TrainingArguments,
 )
 
-# ================= 可配置参数 =================
-MODEL_DIR = "./qwen3"
-TRAIN_FILE = "datasets/law_train.jsonl"  # 训练数据
-DEV_FILE = "datasets/law_val.jsonl"  # 验证集
-OUTPUT_DIR = "./output/law-qwen3"  # 输出到 output 下的新文件夹
-LOG_FILE = "datasets/DISC-Law-SFT/training_log.txt"  # 训练日志文件
+DEFAULT_SEED = 42
+
+# Fixed hyperparameters
 MAX_LENGTH = 1024
 
 LORA_R = 8
 LORA_ALPHA = 32
 LORA_DROPOUT = 0.1
 
-LR = 2e-4
-BATCH_SIZE = 2
-GRAD_ACCUM = 8
-# =============================================
+LORA_TARGET_MODULES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
 
-# ---- 随机种子（保证数据打乱可复现）----
-RANDOM_SEED = 42
-random.seed(RANDOM_SEED)
-torch.manual_seed(RANDOM_SEED)
+
+def parse_args():
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="LoRA fine-tune Qwen3 on the DISC-Law-SFT multiple-choice dataset.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--model-dir", default="./qwen3", help="Path to the base model directory"
+    )
+    parser.add_argument(
+        "--train-file",
+        default="datasets/law_train.jsonl",
+        help="Path to the training JSONL file",
+    )
+    parser.add_argument(
+        "--val-file",
+        default="datasets/law_val.jsonl",
+        help="Path to the validation JSONL file",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./output/law-qwen3",
+        help="Directory for checkpoints and the final adapter",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default="logs",
+        help="Directory for the per-run training log file",
+    )
+    parser.add_argument(
+        "--epoch", type=int, default=1, help="Number of training epochs"
+    )
+    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
+    parser.add_argument(
+        "--batch-size", type=int, default=2, help="Per-device train and eval batch size"
+    )
+    parser.add_argument(
+        "--grad-accum", type=int, default=8, help="Gradient accumulation steps"
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed")
+    parser.add_argument(
+        "--resume-ckpt",
+        default=None,
+        help="Checkpoint directory to resume from; trains from scratch when omitted",
+    )
+    return parser.parse_args()
 
 
-# 训练日志回调：把每个 log（loss / eval_loss 等）写到文件
 class LogToFileCallback(TrainerCallback):
+    """Appends every Trainer log record (loss, eval_loss, ...) to a file."""
+
     def __init__(self, log_file):
         self.log_file = log_file
-        # 只有文件不存在或为空时才写表头（续训时不覆盖之前的日志）
-        if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
-            with open(self.log_file, "w", encoding="utf-8") as f:
-                f.write("=== 法律选择题 LoRA 微调训练日志 ===\n")
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs:
@@ -54,124 +99,134 @@ class LogToFileCallback(TrainerCallback):
                 f.write(json.dumps(logs, ensure_ascii=False, default=str) + "\n")
 
 
-# 1. 加载模型
-print("正在加载模型 ...")
-tokenizer = AutoTokenizer.from_pretrained(
-    MODEL_DIR, use_fast=False, trust_remote_code=True
-)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_DIR, device_map="auto", dtype=torch.bfloat16
-)
-model.enable_input_require_grads()
+def build_process_func(tokenizer, max_length):
+    """Builds a mapping function that formats samples as chat inputs and masks the prompt."""
+
+    def process_func(example):
+        messages = [
+            {"role": "system", "content": example["instruction"]},
+            {"role": "user", "content": example["input"]},
+            {"role": "assistant", "content": example["output"]},
+        ]
+        full_text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False, enable_thinking=False
+        )
+        prompt_text = tokenizer.apply_chat_template(
+            messages[:2],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        full_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"]
+        prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+
+        labels = [-100] * len(prompt_ids) + full_ids[len(prompt_ids) :]
+        if len(full_ids) > max_length:
+            full_ids = full_ids[:max_length]
+            labels = labels[:max_length]
+        return {
+            "input_ids": full_ids,
+            "attention_mask": [1] * len(full_ids),
+            "labels": labels,
+        }
+
+    return process_func
 
 
-# 2. 数据预处理
-def process_func(example):
-    messages = [
-        {"role": "system", "content": example["instruction"]},
-        {"role": "user", "content": example["input"]},
-        {"role": "assistant", "content": example["output"]},
-    ]
-    full_text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=False, enable_thinking=False
+def load_dataset(path, tokenizer, max_length):
+    """Loads a JSONL dataset and tokenizes it into training features."""
+    df = pd.read_json(path, lines=True)
+    ds = Dataset.from_pandas(df)
+    return ds.map(
+        build_process_func(tokenizer, max_length), remove_columns=ds.column_names
     )
-    prompt_text = tokenizer.apply_chat_template(
-        messages[:2], tokenize=False, add_generation_prompt=True, enable_thinking=False
+
+
+def main():
+    args = parse_args()
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    # Every run gets its own log file, named after the start time.
+    os.makedirs(args.log_dir, exist_ok=True)
+    log_file = os.path.join(args.log_dir, f"train-{datetime.now():%Y%m%d-%H%M%S}.log")  # noqa: DTZ005
+
+    print(f"Loading tokenizer and model from {args.model_dir} ...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_dir, use_fast=False, trust_remote_code=True
     )
-    full_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"]
-    prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
-    labels = [-100] * len(prompt_ids) + full_ids[len(prompt_ids) :]
-    if len(full_ids) > MAX_LENGTH:
-        full_ids = full_ids[:MAX_LENGTH]
-        labels = labels[:MAX_LENGTH]
-    return {
-        "input_ids": full_ids,
-        "attention_mask": [1] * len(full_ids),
-        "labels": labels,
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_dir, device_map="auto", dtype=torch.bfloat16
+    )
+    model.enable_input_require_grads()
+
+    train_dataset = load_dataset(args.train_file, tokenizer, MAX_LENGTH)
+    print(f"Training samples: {len(train_dataset)}")
+    eval_dataset = load_dataset(args.val_file, tokenizer, MAX_LENGTH)
+    print(f"Validation samples: {len(eval_dataset)}")
+
+    model = get_peft_model(
+        model,
+        LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            target_modules=LORA_TARGET_MODULES,
+            inference_mode=False,
+            r=LORA_R,
+            lora_alpha=LORA_ALPHA,
+            lora_dropout=LORA_DROPOUT,
+        ),
+    )
+    model.print_trainable_parameters()
+
+    training_args = TrainingArguments(
+        output_dir=args.output_dir,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=args.lr,
+        num_train_epochs=args.epoch,
+        logging_steps=10,
+        save_steps=100,
+        eval_strategy="steps",
+        eval_steps=200,
+        gradient_checkpointing=True,
+        bf16=True,
+        report_to="none",
+        save_total_limit=3,
+        seed=args.seed,
+    )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True),
+        callbacks=[LogToFileCallback(log_file)],
+    )
+
+    if args.resume_ckpt:
+        print(f"Resuming training from {args.resume_ckpt} ...")
+        result = trainer.train(resume_from_checkpoint=args.resume_ckpt)
+    else:
+        print("Training from scratch ...")
+        result = trainer.train()
+
+    final_dir = os.path.join(args.output_dir, "final")
+    trainer.save_model(final_dir)
+
+    summary = {
+        "resumed_from": args.resume_ckpt,
+        "epochs": args.epoch,
+        "global_step": result.global_step,
+        "train_runtime_seconds": round(result.metrics.get("train_runtime", 0), 1),
     }
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(summary, ensure_ascii=False, default=str) + "\n")
+
+    print(f"Training finished, model saved to {final_dir}")
+    print(f"Training log saved to {log_file}")
 
 
-train_df = pd.read_json(TRAIN_FILE, lines=True)
-train_ds = Dataset.from_pandas(train_df)
-train_dataset = train_ds.map(process_func, remove_columns=train_ds.column_names)
-print(f"训练数据：{len(train_dataset)} 条")
-
-dev_df = pd.read_json(DEV_FILE, lines=True)
-dev_ds = Dataset.from_pandas(dev_df)
-eval_dataset = dev_ds.map(process_func, remove_columns=dev_ds.column_names)
-print(f"验证数据：{len(eval_dataset)} 条")
-
-
-# 3. LoRA 配置
-config = LoraConfig(
-    task_type=TaskType.CAUSAL_LM,
-    target_modules=[
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    ],
-    inference_mode=False,
-    r=LORA_R,
-    lora_alpha=LORA_ALPHA,
-    lora_dropout=LORA_DROPOUT,
-)
-model = get_peft_model(model, config)
-model.print_trainable_parameters()
-
-
-# 4. 训练参数
-args = TrainingArguments(
-    output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=BATCH_SIZE,
-    per_device_eval_batch_size=BATCH_SIZE,
-    gradient_accumulation_steps=GRAD_ACCUM,
-    learning_rate=LR,
-    num_train_epochs=1,  # 固定训一遍，脚本不提供轮数配置
-    logging_steps=10,
-    save_steps=100,
-    eval_strategy="steps",
-    eval_steps=200,
-    gradient_checkpointing=True,
-    bf16=True,
-    report_to="none",
-    save_total_limit=3,
-    seed=RANDOM_SEED,
-)
-
-trainer = Trainer(
-    model=model,
-    args=args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
-    data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True),
-    callbacks=[LogToFileCallback(LOG_FILE)],
-)
-
-print("开始训练 ...")
-# 自动判断：有存档点就接着练，没有就从头开始
-checkpoints = glob.glob(os.path.join(OUTPUT_DIR, "checkpoint-*"))
-if checkpoints:
-    print("发现存档点，从最近的继续训练 ...")
-    result = trainer.train(resume_from_checkpoint=True)
-else:
-    print("无存档点，从头开始训练 ...")
-    result = trainer.train()
-trainer.save_model(OUTPUT_DIR + "/final")
-
-# 写训练总结
-summary = {
-    "训练完成": True,
-    "总步数": result.global_step,
-    "总耗时_秒": round(result.metrics.get("train_runtime", 0), 1),
-    "最终训练loss": result.metrics.get("train_loss"),
-}
-with open(LOG_FILE, "a", encoding="utf-8") as f:
-    f.write("\n=== 训练总结 ===\n")
-    f.write(json.dumps(summary, ensure_ascii=False, default=str) + "\n")
-
-print(f"训练完成，模型已保存到 {OUTPUT_DIR}/final")
-print(f"训练日志已保存到 {LOG_FILE}")
+if __name__ == "__main__":
+    main()

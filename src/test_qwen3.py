@@ -1,3 +1,6 @@
+"""Evaluation of Qwen3 and its LoRA adapter on the law multiple-choice test set."""
+
+import argparse
 import json
 import os
 import random
@@ -8,24 +11,56 @@ from modelscope import AutoTokenizer
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
 
-MODEL_DIR = "./qwen3"
-ADAPTER = "output/law-qwen3/final"  # 训练好的 LoRA 适配器
-TEST_FILE = "datasets/law_test.jsonl"  # 法律测试集（未参与训练）
+DEFAULT_SEED = 42
 
-# ---- 随机种子（保证结果可复现）----
-RANDOM_SEED = 42
-random.seed(RANDOM_SEED)
-torch.manual_seed(RANDOM_SEED)
+# Fixed generation setting
+MAX_NEW_TOKENS = 64
 
-tokenizer = AutoTokenizer.from_pretrained(
-    MODEL_DIR, use_fast=False, trust_remote_code=True
-)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_DIR, dtype=torch.bfloat16, device_map="auto"
-)
+ANSWER_PATTERN = re.compile(r"\b([A-D])\b")
 
 
-def generate_answer(model, instruction, input_text):
+def parse_args():
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Evaluate Qwen3 (base model and LoRA adapter) on the law multiple-choice test set.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--model-dir", default="./qwen3", help="Path to the base model directory"
+    )
+    parser.add_argument(
+        "--adapter",
+        default="output/law-qwen3/final",
+        help="Path to the trained LoRA adapter",
+    )
+    parser.add_argument(
+        "--test-file",
+        default="datasets/law_test.jsonl",
+        help="Path to the test JSONL file",
+    )
+    parser.add_argument(
+        "--result-dir",
+        default="logs/test_results",
+        help="Directory for the result text files",
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed")
+    return parser.parse_args()
+
+
+def load_test_data(path):
+    """Loads the non-empty JSONL records of the test set."""
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def extract_letter(text):
+    """Extracts the A/B/C/D answer letter from the model output."""
+    match = ANSWER_PATTERN.search(text)
+    return match.group(1) if match else None
+
+
+def generate_answer(model, tokenizer, instruction, input_text, max_new_tokens):
+    """Generates an answer for a single sample with greedy decoding."""
     messages = [
         {"role": "system", "content": instruction},
         {"role": "user", "content": input_text},
@@ -35,60 +70,85 @@ def generate_answer(model, instruction, input_text):
     )
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=64, do_sample=False)
+        outputs = model.generate(
+            **inputs, max_new_tokens=max_new_tokens, do_sample=False
+        )
     new_tokens = outputs[0][inputs["input_ids"].shape[1] :]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
-def extract_letter(text):
-    """从模型回答里提取 A/B/C/D 字母"""
-    m = re.search(r"\b([A-D])\b", text)
-    return m.group(1) if m else None
-
-
-test_data = []
-with open(TEST_FILE, encoding="utf-8") as f:
-    for line in f:
-        if line.strip():
-            test_data.append(json.loads(line))
-print(f"测试数据：{len(test_data)} 条")
-
-
-def run_test(model, out_file, label):
-    os.makedirs(os.path.dirname(out_file), exist_ok=True)  # 结果目录不存在时先建好
+def run_test(model, tokenizer, test_data, out_file, label, max_new_tokens):
+    """Runs one evaluation pass and writes the per-sample results to out_file."""
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
     model.eval()
     correct = 0
     result_lines = [f"===== {label} ====="]
-    for i, d in enumerate(test_data):
-        expected = d["output"][0]  # 正确答案字母，如 "A"
-        pred = generate_answer(model, d["instruction"], d["input"])
+    for i, sample in enumerate(test_data):
+        expected = sample["output"].strip()[0].upper()  # Correct letter, e.g. "A"
+        pred = generate_answer(
+            model, tokenizer, sample["instruction"], sample["input"], max_new_tokens
+        )
         pred_letter = extract_letter(pred)
         ok = pred_letter == expected
-        if ok:
-            correct += 1
-        mark = "对" if ok else "错"
+        correct += int(ok)
         line = (
-            f"[{i+1:3d}/{len(test_data)}] 正确答案={expected}  模型答={pred_letter}  "
-            f"{mark}  | 原始输出: {pred[:30]}"
+            f"[{i + 1:3d}/{len(test_data)}] answer={expected}  predicted={pred_letter}  "
+            f"{'right' if ok else 'wrong'} | output: {pred[:32].replace('\n', ' ')}"
         )
         print(line)
         result_lines.append(line)
-        result_lines.append(f"    题目: {d['input'][:100]}")
+        result_lines.append(f"    question: {sample['input'][:100]}")
         result_lines.append("")
 
-    summary = f"===== {label} 准确率: {correct}/{len(test_data)} = {correct/len(test_data)*100:.1f}% ====="
+    accuracy = correct / len(test_data)
+    summary = (
+        f"===== {label} accuracy: {correct}/{len(test_data)} = {accuracy:.2%} ====="
+    )
     print(f"\n{summary}\n")
     result_lines.append(summary)
     with open(out_file, "w", encoding="utf-8") as f:
         f.write("\n".join(result_lines))
-    print(f"结果已保存到 {out_file}\n")
+    print(f"Results saved to {out_file}\n")
+    return accuracy
 
 
-print("【第 1 步】测试微调前的原始模型 ...")
-run_test(model, "test_law/law_test_result_baseline.txt", "微调前(原始模型)")
+def main():
+    args = parse_args()
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
-model = PeftModel.from_pretrained(model, ADAPTER)
-print("【第 2 步】测试微调后的模型 ...")
-run_test(model, "test_law/law_test_result.txt", "微调后(LoRA)")
+    test_data = load_test_data(args.test_file)
+    if not test_data:
+        raise SystemExit(f"No test samples found in {args.test_file}")
+    print(f"Test samples: {len(test_data)}")
 
-print("全部完成！请对比 law_test_result_baseline.txt 和 law_test_result.txt 两个文件。")
+    print(f"Loading tokenizer and model from {args.model_dir} ...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_dir, use_fast=False, trust_remote_code=True
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_dir, dtype=torch.bfloat16, device_map="auto"
+    )
+
+    baseline_file = os.path.join(args.result_dir, "law_test_result_baseline.txt")
+    tuned_file = os.path.join(args.result_dir, "law_test_result.txt")
+
+    print("[1/2] Evaluating the base model ...")
+    baseline_acc = run_test(
+        model, tokenizer, test_data, baseline_file, "base model", MAX_NEW_TOKENS
+    )
+
+    model = PeftModel.from_pretrained(model, args.adapter)
+    print("[2/2] Evaluating the LoRA-tuned model ...")
+    tuned_acc = run_test(
+        model, tokenizer, test_data, tuned_file, "LoRA", MAX_NEW_TOKENS
+    )
+
+    print(f"Base model accuracy: {baseline_acc:.1%}")
+    print(f"LoRA accuracy: {tuned_acc:.1%}")
+    print(f"Improvement: {tuned_acc - baseline_acc:+.1%}")
+    print(f"Results saved to {baseline_file} and {tuned_file}")
+
+
+if __name__ == "__main__":
+    main()
