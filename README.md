@@ -41,6 +41,8 @@ poetry run python src/prepare_data.py
 poetry run python src/prepare_data.py --out-dir datasets/mini --max-samples 1000 --split-ratio 8,1,1
 ```
 
+源数据里约一半是多项选择题（答案区会列出多个正确选项），脚本按答案区行数区分题型，单选和多选各用一套 instruction，多选题的答案原样保留成多行。
+
 ### 训练 `src/train_qwen3.py`
 
 LoRA 微调，默认训练 1 轮，batch-size 2 × grad-accum 8。适配器存到 `output/law-qwen3/final`，日志写到 `logs/`：
@@ -63,7 +65,7 @@ poetry run python src/train_qwen3.py \
 
 ### 测试 `src/test_qwen3.py`
 
-先评指定的模型，结果文件按运行时间命名写到 `logs/test_results/`：
+先评指定的模型，结果文件按运行时间命名写到 `--result-dir`（默认 `logs/`）下：
 
 ```bash
 # 默认：挂 output/law-qwen3/final 适配器，评完整测试集
@@ -78,10 +80,12 @@ poetry run python src/test_qwen3.py \
   --test-file datasets/mini/law_test.jsonl
 ```
 
+结果文件里 `expected` 和 `predicted` 都是选中的选项字母集合（多选形如 `AD`），两者完全一致才算对；控制台会另按单选、多选分别给出准确率。
+
 ```python
 import pandas as pd
 
-d = pd.read_json("logs/test_results/test-xxxx.jsonl", lines=True)
+d = pd.read_json("logs/test-xxxx.jsonl", lines=True)
 print(d.correct.mean())
 ```
 

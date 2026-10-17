@@ -15,10 +15,17 @@ RAW_CSV = "datasets/DISC-Law-SFT/DISC-Law-SFT-Pair.csv"
 DEFAULT_SPLIT_RATIO = "17,1,2"  # train:val:test
 DEFAULT_SEED = 42
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_SINGLE = (
     "你是一名法律知识问答助手。请阅读下面的法律单项选择题，"
     "从 A、B、C、D 四个选项中选出唯一正确的答案。"
     "只输出正确选项的字母和内容，不要解释，不可多选。"
+)
+
+# 源数据里近一半的题是多选题，答案区会列出多个正确选项
+SYSTEM_PROMPT_MULTIPLE = (
+    "你是一名法律知识问答助手。请阅读下面的法律多项选择题，"
+    "从 A、B、C、D 四个选项中选出所有正确的答案，正确答案可能有两个以上。"
+    "按字母顺序逐行输出所有正确选项的字母和内容，不要解释。"
 )
 
 
@@ -87,8 +94,28 @@ def parse_input(text):
 
 
 def parse_output(text):
-    """答案 = 第一行（字母 + 答案内容），去掉后面的推理过程"""
-    return text.split("\n")[0].strip()
+    """答案 = “解析”之前的全部选项行（多选题会有多行），去掉后面的推理过程"""
+    lines = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if line.startswith("解析"):
+            break
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+# 答案区的每一行都是「字母 + 点号 + 选项内容」，多选题逐行列出一个正确选项
+ANSWER_LINE = re.compile(r"^([A-D])[\.、．]")
+
+
+def answer_letters(output):
+    """答案里选中的选项字母，按出现顺序"""
+    return [
+        m.group(1)
+        for m in (ANSWER_LINE.match(line) for line in output.split("\n"))
+        if m
+    ]
 
 
 def split_items(items, ratio):
@@ -110,16 +137,23 @@ def main():
     exam = df[df["id"].astype(str).str.startswith("exam", na=False)]
     print(f"Exam items found: {len(exam)}")
 
-    # 转成 instruction/input/output
+    # 转成 instruction/input/output；多选题的答案区有多行，instruction 换成多选版本
     items = []
     for _, row in exam.iterrows():
+        output = parse_output(row["output"])
+        multiple = len(answer_letters(output)) > 1
         items.append(
             {
-                "instruction": SYSTEM_PROMPT,
+                "instruction": (
+                    SYSTEM_PROMPT_MULTIPLE if multiple else SYSTEM_PROMPT_SINGLE
+                ),
                 "input": parse_input(row["input"]),
-                "output": parse_output(row["output"]),
+                "output": output,
             }
         )
+
+    n_multiple = sum(item["instruction"] == SYSTEM_PROMPT_MULTIPLE for item in items)
+    print(f"Multiple-choice items: {n_multiple} / {len(items)}")
 
     # 打乱顺序
     random.shuffle(items)

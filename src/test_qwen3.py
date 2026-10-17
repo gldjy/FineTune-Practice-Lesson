@@ -17,7 +17,9 @@ DEFAULT_SEED = 42
 # Fixed generation setting
 MAX_NEW_TOKENS = 64
 
-ANSWER_PATTERN = re.compile(r"\b([A-D])\b")
+# 答案区/模型输出的选项行都以「字母 + 分隔符」开头，多选题会有多行
+CHOICE_LINE = re.compile(r"^\s*([A-D]+)(?=[\s\.、．,，:：]|$)")
+LOOSE_LETTER = re.compile(r"(?<![A-Za-z])([A-D])(?![A-Za-z])")
 
 
 def parse_args():
@@ -54,10 +56,16 @@ def load_test_data(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def extract_letter(text):
-    """Extracts the A/B/C/D answer letter from the model output."""
-    match = ANSWER_PATTERN.search(text)
-    return match.group(1) if match else None
+def extract_letters(text):
+    """Extracts all selected A/B/C/D letters from a dataset answer or a model output."""
+    letters = []
+    for line in text.split("\n"):
+        match = CHOICE_LINE.match(line)
+        if match:
+            letters.extend(match.group(1))
+    if not letters:  # 兜底：模型把答案写成“答案是 A”这类不成选项行的形式
+        letters = LOOSE_LETTER.findall(text)
+    return sorted(set(letters))
 
 
 def generate_answer(model, tokenizer, instruction, input_text, max_new_tokens):
@@ -79,36 +87,42 @@ def generate_answer(model, tokenizer, instruction, input_text, max_new_tokens):
 
 
 def run_test(model, tokenizer, test_data, out_file, meta, max_new_tokens):
-    """Runs one evaluation pass; out_file gets one meta line plus one JSONL record per sample."""
+    """Runs one evaluation pass; out_file gets one meta line plus one JSONL record per sample.
+
+    Returns the (correct, total) counts of single- and multiple-choice questions.
+    """
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     model.eval()
-    correct = 0
+    stats = {"single": [0, 0], "multiple": [0, 0]}
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(json.dumps({"meta": meta}, ensure_ascii=False) + "\n")
         for i, sample in enumerate(test_data):
-            expected = sample["output"].strip()[0].upper()  # Correct letter, e.g. "A"
+            expected = extract_letters(sample["output"])  # e.g. ["A"] or ["A", "D"]
             pred = generate_answer(
                 model, tokenizer, sample["instruction"], sample["input"], max_new_tokens
             )
-            pred_letter = extract_letter(pred)
-            ok = pred_letter == expected
-            correct += int(ok)
+            predicted = extract_letters(pred)
+            ok = predicted == expected  # 多选题要字母集合完全一致才算对
+            kind = "multiple" if len(expected) > 1 else "single"
+            stats[kind][0] += int(ok)
+            stats[kind][1] += 1
+            exp, prd = "".join(expected), "".join(predicted)
             # Full question, options and model output, no truncation.
             record = {
                 "index": i + 1,
                 "input": sample["input"],
-                "expected": expected,
-                "predicted": pred_letter,
+                "expected": exp,
+                "predicted": prd,
                 "correct": ok,
                 "output": pred,
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
             print(
-                f"[{i + 1:3d}/{len(test_data)}] expected={expected}  "
-                f"predicted={pred_letter}  {'right' if ok else 'wrong'}"
+                f"[{i + 1:3d}/{len(test_data)}] expected={exp}  predicted={prd}  "
+                f"{'right' if ok else 'wrong'}"
             )
 
-    return correct
+    return stats
 
 
 def main():
@@ -151,9 +165,15 @@ def main():
         "samples": len(test_data),
         "max_new_tokens": MAX_NEW_TOKENS,
     }
-    correct = run_test(model, tokenizer, test_data, out_file, meta, MAX_NEW_TOKENS)
+    stats = run_test(model, tokenizer, test_data, out_file, meta, MAX_NEW_TOKENS)
 
-    print(f"\n{label} accuracy: {correct}/{len(test_data)} = {correct / len(test_data):.2%}")
+    total = len(test_data)
+    correct = stats["single"][0] + stats["multiple"][0]
+    print(f"\n{label} accuracy: {correct}/{total} = {correct / total:.2%}")
+    for kind in ("single", "multiple"):
+        n_correct, n_total = stats[kind]
+        acc = f"{n_correct / n_total:.2%}" if n_total else "-"
+        print(f"  {kind + '-choice':<16}{n_correct}/{n_total} = {acc}")
     print(f"Results saved to {out_file}")
 
 
