@@ -7,13 +7,16 @@ import random
 import re
 
 import pandas as pd
+from modelscope import AutoTokenizer
 
 # ---- 原始数据路径 ----
 RAW_CSV = "datasets/DISC-Law-SFT/DISC-Law-SFT-Pair.csv"
+TOKENIZER_DIR = "./qwen3"  # 数 token 用的分词器，和训练脚本共用同一份
 
 # Defaults for the command-line options
 DEFAULT_SPLIT_RATIO = "17,1,2"  # train:val:test
 DEFAULT_SEED = 42
+DEFAULT_MAX_LENGTH = 640  # 超过这个 token 长度的样本会被丢掉
 
 SYSTEM_PROMPT_SINGLE = (
     "你是一名法律知识问答助手。请阅读下面的法律单项选择题，"
@@ -69,6 +72,15 @@ def parse_args():
         help="Maximum number of shuffled samples to use; -1 uses all",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed")
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=DEFAULT_MAX_LENGTH,
+        help=(
+            "Drop samples whose chat-formatted token length exceeds this; "
+            "-1 turns the filter off"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -118,6 +130,26 @@ def answer_letters(output):
     ]
 
 
+def token_length(tokenizer, item):
+    """数出样本在训练时实际占的 token 数"""
+    messages = [
+        {"role": "system", "content": item["instruction"]},
+        {"role": "user", "content": item["input"]},
+        {"role": "assistant", "content": item["output"]},
+    ]
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False, enable_thinking=False
+    )
+    return len(tokenizer(text, add_special_tokens=False)["input_ids"])
+
+
+def filter_by_length(items, tokenizer, max_length):
+    """丢掉训练时会被截断的长样本"""
+    kept = [item for item in items if token_length(tokenizer, item) <= max_length]
+    print(f"Dropped {len(items) - len(kept)} samples longer than {max_length} tokens")
+    return kept
+
+
 def split_items(items, ratio):
     """Splits shuffled items by ratio; the rounding remainder goes to the test split."""
     total = len(items)
@@ -151,6 +183,13 @@ def main():
                 "output": output,
             }
         )
+
+    if args.max_length >= 0:
+        print(f"Loading tokenizer from {TOKENIZER_DIR} to drop long samples ...")
+        tokenizer = AutoTokenizer.from_pretrained(
+            TOKENIZER_DIR, use_fast=False, trust_remote_code=True
+        )
+        items = filter_by_length(items, tokenizer, args.max_length)
 
     n_multiple = sum(item["instruction"] == SYSTEM_PROMPT_MULTIPLE for item in items)
     print(f"Multiple-choice items: {n_multiple} / {len(items)}")

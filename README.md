@@ -34,11 +34,14 @@
 读取 `datasets/DISC-Law-SFT/DISC-Law-SFT-Pair.csv` 里的法律选择题，清洗题面后打乱切分，输出 `law_train.jsonl`、`law_val.jsonl`、`law_test.jsonl`：
 
 ```bash
-# 默认行为：输出到 datasets/，按 17:1:2 切分全部样本
+# 默认行为：输出到 datasets/，丢掉长样本，其余按 17:1:2 切分
 poetry run python src/prepare_data.py
 
 # 换输出目录、切分比例和采样量（打乱后取前 1000 条，按 8:1:1 切）
 poetry run python src/prepare_data.py --out-dir datasets/mini --max-samples 1000 --split-ratio 8,1,1
+
+# 更换丢弃长样本的长度阈值
+poetry run python src/prepare_data.py --max-length 1280
 ```
 
 源数据里约一半是多项选择题（答案区会列出多个正确选项），脚本按答案区行数区分题型，单选和多选各用一套 instruction，多选题的答案原样保留成多行。

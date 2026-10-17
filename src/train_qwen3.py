@@ -1,8 +1,11 @@
 """LoRA fine-tuning of Qwen3 on the DISC-Law-SFT multiple-choice dataset."""
 
+import os
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # 防止 Cuda OOM
+
 import argparse
 import json
-import os
 import random
 from datetime import datetime
 
