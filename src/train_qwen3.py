@@ -22,16 +22,15 @@ TRAIN_FILE = "datasets/law_train.jsonl"  # 训练数据
 DEV_FILE = "datasets/law_val.jsonl"  # 验证集
 OUTPUT_DIR = "./output/law-qwen3"  # 输出到 output 下的新文件夹
 LOG_FILE = "datasets/DISC-Law-SFT/training_log.txt"  # 训练日志文件
-MAX_LENGTH = 512
+MAX_LENGTH = 1024
 
 LORA_R = 8
 LORA_ALPHA = 32
 LORA_DROPOUT = 0.1
 
 LR = 2e-4
-EPOCHS = 2  # 医学项目经验：2 轮最佳，3 轮会过拟合
-BATCH_SIZE = 4
-GRAD_ACCUM = 4
+BATCH_SIZE = 2
+GRAD_ACCUM = 8
 # =============================================
 
 # ---- 随机种子（保证数据打乱可复现）----
@@ -131,15 +130,15 @@ args = TrainingArguments(
     per_device_eval_batch_size=BATCH_SIZE,
     gradient_accumulation_steps=GRAD_ACCUM,
     learning_rate=LR,
-    num_train_epochs=EPOCHS,
+    num_train_epochs=1,  # 固定训一遍，脚本不提供轮数配置
     logging_steps=10,
-    save_steps=100,  # 每 100 步存一次档（更频繁，重启损失更小）
+    save_steps=100,
     eval_strategy="steps",
     eval_steps=200,
     gradient_checkpointing=True,
     bf16=True,
     report_to="none",
-    save_total_limit=2,
+    save_total_limit=3,
     seed=RANDOM_SEED,
 )
 
