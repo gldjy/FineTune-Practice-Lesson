@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import random
 
 import pandas as pd
 import torch
@@ -32,6 +33,11 @@ EPOCHS = 2  # 医学项目经验：2 轮最佳，3 轮会过拟合
 BATCH_SIZE = 4
 GRAD_ACCUM = 4
 # =============================================
+
+# ---- 随机种子（保证数据打乱可复现）----
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
 
 
 # 训练日志回调：把每个 log（loss / eval_loss 等）写到文件
@@ -134,6 +140,7 @@ args = TrainingArguments(
     bf16=True,
     report_to="none",
     save_total_limit=2,
+    seed=RANDOM_SEED,
 )
 
 trainer = Trainer(

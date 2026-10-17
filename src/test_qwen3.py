@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import re
 
 import torch
@@ -10,7 +11,11 @@ from transformers import AutoModelForCausalLM
 MODEL_DIR = "./qwen3"
 ADAPTER = "output/law-qwen3/final"  # 训练好的 LoRA 适配器
 TEST_FILE = "datasets/law_test.jsonl"  # 法律测试集（未参与训练）
-NUM_TEST = 1000  # 测前 1000 条
+
+# ---- 随机种子（保证结果可复现）----
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
 
 tokenizer = AutoTokenizer.from_pretrained(
     MODEL_DIR, use_fast=False, trust_remote_code=True
@@ -43,10 +48,10 @@ def extract_letter(text):
 
 test_data = []
 with open(TEST_FILE, encoding="utf-8") as f:
-    for i, line in enumerate(f):
-        if i >= NUM_TEST:
-            break
-        test_data.append(json.loads(line))
+    for line in f:
+        if line.strip():
+            test_data.append(json.loads(line))
+print(f"测试数据：{len(test_data)} 条")
 
 
 def run_test(model, out_file, label):
@@ -80,10 +85,10 @@ def run_test(model, out_file, label):
 
 
 print("【第 1 步】测试微调前的原始模型 ...")
-run_test(model, "test_1000_law/law_test_result_baseline.txt", "微调前(原始模型)")
+run_test(model, "test_law/law_test_result_baseline.txt", "微调前(原始模型)")
 
 model = PeftModel.from_pretrained(model, ADAPTER)
 print("【第 2 步】测试微调后的模型 ...")
-run_test(model, "test_1000_law/law_test_result.txt", "微调后(LoRA)")
+run_test(model, "test_law/law_test_result.txt", "微调后(LoRA)")
 
 print("全部完成！请对比 law_test_result_baseline.txt 和 law_test_result.txt 两个文件。")

@@ -12,18 +12,16 @@ OUT_TRAIN = "datasets/law_train.jsonl"
 OUT_VAL = "datasets/law_val.jsonl"
 OUT_TEST = "datasets/law_test.jsonl"
 
-# ---- 切分数量（可用一小部分，改这里）----
-TRAIN_SIZE = 15000  # 训练集（总共 21054 条选择题，取 1.5 万）
-VAL_SIZE = 500  # 验证集
-TEST_SIZE = 1000  # 测试集
+# ---- 切分比例（训练 : 验证 : 测试），按总数比例全部划分 ----
+DATASET_SPLIT = (17, 1, 2)
 
 # ---- 随机种子（保证每次切分结果一样）----
-SEED = 42
+RANDOM_SEED = 42
 
 SYSTEM_PROMPT = (
-    "你是一名法律考试助手。请阅读下面的法律单项选择题，"
+    "你是一名法律知识问答助手。请阅读下面的法律单项选择题，"
     "从 A、B、C、D 四个选项中选出唯一正确的答案。"
-    "只输出正确选项的字母和内容，不要解释。"
+    "只输出正确选项的字母和内容，不要解释，不可多选。"
 )
 
 
@@ -72,13 +70,18 @@ def main():
         )
 
     # 打乱顺序
-    random.seed(SEED)
+    random.seed(RANDOM_SEED)
     random.shuffle(items)
 
-    # 切分 train / val / test
-    train = items[:TRAIN_SIZE]
-    val = items[TRAIN_SIZE : TRAIN_SIZE + VAL_SIZE]
-    test = items[TRAIN_SIZE + VAL_SIZE : TRAIN_SIZE + VAL_SIZE + TEST_SIZE]
+    # 按比例切分 train / val / test（样本数由总数自动算出，不硬编码）
+    total = len(items)
+    ratio_sum = sum(DATASET_SPLIT)
+    n_train = total * DATASET_SPLIT[0] // ratio_sum
+    n_val = total * DATASET_SPLIT[1] // ratio_sum
+
+    train = items[:n_train]
+    val = items[n_train : n_train + n_val]
+    test = items[n_train + n_val :]
 
     for path, data in [(OUT_TRAIN, train), (OUT_VAL, val), (OUT_TEST, test)]:
         with open(path, "w", encoding="utf-8") as f:
