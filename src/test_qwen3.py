@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 
 import torch
+from dataset_splits import find_split_file
 from modelscope import AutoTokenizer
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
@@ -37,9 +38,9 @@ def parse_args():
         help="LoRA checkpoint directory to evaluate; pass 'none' to evaluate the base model",
     )
     parser.add_argument(
-        "--test-file",
-        default="datasets/law_test.jsonl",
-        help="Path to the test JSONL file",
+        "--dataset-dir",
+        default="datasets/full",
+        help="Directory holding the train/val/test JSONL files",
     )
     parser.add_argument(
         "--result-dir",
@@ -130,9 +131,12 @@ def main():
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    test_data = load_test_data(args.test_file)
+    test_file = find_split_file(args.dataset_dir, "test")
+    print(f"Test file: {test_file}")
+
+    test_data = load_test_data(test_file)
     if not test_data:
-        raise SystemExit(f"No test samples found in {args.test_file}")
+        raise SystemExit(f"No test samples found in {test_file}")
     print(f"Test samples: {len(test_data)}")
 
     print(f"Loading tokenizer and model from {args.model_dir} ...")
@@ -160,7 +164,7 @@ def main():
         "timestamp": now.isoformat(timespec="seconds"),
         "ckpt": ckpt,
         "model_dir": args.model_dir,
-        "test_file": args.test_file,
+        "test_file": test_file,
         "seed": args.seed,
         "samples": len(test_data),
         "max_new_tokens": MAX_NEW_TOKENS,

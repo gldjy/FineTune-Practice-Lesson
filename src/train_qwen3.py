@@ -2,7 +2,9 @@
 
 import os
 
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # 防止 Cuda OOM
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+)  # 防止 Cuda OOM
 
 import argparse
 import json
@@ -11,6 +13,7 @@ from datetime import datetime
 
 import pandas as pd
 import torch
+from dataset_splits import find_split_file
 from datasets import Dataset
 from modelscope import AutoTokenizer
 from peft import LoraConfig, TaskType, get_peft_model
@@ -52,14 +55,9 @@ def parse_args():
         "--model-dir", default="./qwen3", help="Path to the base model directory"
     )
     parser.add_argument(
-        "--train-file",
-        default="datasets/law_train.jsonl",
-        help="Path to the training JSONL file",
-    )
-    parser.add_argument(
-        "--val-file",
-        default="datasets/law_val.jsonl",
-        help="Path to the validation JSONL file",
+        "--dataset-dir",
+        default="datasets/full",
+        help="Directory holding the train/val/test JSONL files",
     )
     parser.add_argument(
         "--output-dir",
@@ -154,6 +152,12 @@ def main():
     os.makedirs(args.log_dir, exist_ok=True)
     log_file = os.path.join(args.log_dir, f"train-{datetime.now():%Y%m%d-%H%M%S}.log")  # noqa: DTZ005
 
+    # 先定位数据文件再加载模型，找不到就早点退出
+    train_file = find_split_file(args.dataset_dir, "train")
+    val_file = find_split_file(args.dataset_dir, "val")
+    print(f"Training file: {train_file}")
+    print(f"Validation file: {val_file}")
+
     print(f"Loading tokenizer and model from {args.model_dir} ...")
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_dir, use_fast=False, trust_remote_code=True
@@ -163,9 +167,9 @@ def main():
     )
     model.enable_input_require_grads()
 
-    train_dataset = load_dataset(args.train_file, tokenizer, MAX_LENGTH)
+    train_dataset = load_dataset(train_file, tokenizer, MAX_LENGTH)
     print(f"Training samples: {len(train_dataset)}")
-    eval_dataset = load_dataset(args.val_file, tokenizer, MAX_LENGTH)
+    eval_dataset = load_dataset(val_file, tokenizer, MAX_LENGTH)
     print(f"Validation samples: {len(eval_dataset)}")
 
     model = get_peft_model(

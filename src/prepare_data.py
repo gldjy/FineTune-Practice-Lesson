@@ -57,7 +57,9 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--out-dir", default="datasets", help="Directory for the generated JSONL files"
+        "--dataset-dir",
+        default="datasets/full",
+        help="Directory for the generated JSONL files",
     )
     parser.add_argument(
         "--split-ratio",
@@ -202,9 +204,9 @@ def main():
 
     train, val, test = split_items(items, args.split_ratio)
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(args.dataset_dir, exist_ok=True)
     for split, data in (("train", train), ("val", val), ("test", test)):
-        path = os.path.join(args.out_dir, f"law_{split}.jsonl")
+        path = os.path.join(args.dataset_dir, f"law_{split}.jsonl")
         with open(path, "w", encoding="utf-8") as f:
             f.writelines(json.dumps(item, ensure_ascii=False) + "\n" for item in data)
         print(f"Wrote {len(data)} samples to {path}")
