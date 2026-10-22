@@ -83,6 +83,15 @@ def parse_args():
             "-1 turns the filter off"
         ),
     )
+    parser.add_argument(
+        "--dedup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Drop duplicate questions by fingerprint, e.g. the same item sampled "
+            "once with and once without its question number"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -152,13 +161,118 @@ def filter_by_length(items, tokenizer, max_length):
     return kept
 
 
-def split_items(items, ratio):
-    """Splits shuffled items by ratio; the rounding remainder goes to the test split."""
+# ---------------------------------------------------------------- 去重 / 防泄漏
+#
+# 源数据里有两类重复，靠简单的字符串比对抓不到，所以统一用「指纹」判断：
+#   1. 同一道题被采了两遍，一遍带题号（"96."）、一遍不带；
+#   2. 同一案例背景出多道小问，题面开头不同但问题和选项完全一致。
+# 指纹取「问题句尾部 + 全部选项」，因此对题号前缀和背景截取长度都不敏感。
+
+
+def normalize(text):
+    """Strips all whitespace so line-break and space differences do not matter."""
+    return re.sub(r"\s+", "", text or "")
+
+
+# 选项行：行首的 A. / B、/ C．
+OPTION_SPLIT = re.compile(r"(?:^|\n)\s*([A-D])[\.、．]\s*")
+
+# 问题句只取尾部这么长，前面通常是案例背景，同一案例会被截到不同起点
+STEM_TAIL = 110
+
+# 案例背景键的长度：法考里同一背景会出多道小问（如 96-100 题组）
+BACKGROUND_HEAD = 60
+
+
+def parse_question(text):
+    """Splits text into (question stem, option list); (None, None) if malformed."""
+    matches = list(OPTION_SPLIT.finditer(text))
+    if len(matches) < 4:
+        return None, None
+    stem = text[: matches[0].start()]
+    options = []
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        options.append(normalize(text[match.end() : end]))
+    return stem, options
+
+
+def fingerprint(item):
+    """Returns the item fingerprint: stem tail plus the option sequence."""
+    stem, options = parse_question(item["input"])
+    if stem is None:
+        return normalize(item["input"])[-200:]  # 兜底：整题文本
+    return normalize(stem)[-STEM_TAIL:] + "||" + "|".join(options)
+
+
+def background_key(item):
+    """Returns the case-background key: a fixed-length slice of the question text."""
+    return normalize(item["input"])[:BACKGROUND_HEAD]
+
+
+def deduplicate(items):
+    """Drops duplicate questions by fingerprint.
+
+    Keeps one item per fingerprint; when the answers differ (a multi-choice item
+    split into single-choice ones) the item with more correct options wins.
+    Returns (deduplicated items, stats dict).
+    """
+    kept = {}  # 指纹 -> (原始下标, 样本)
+    stats = {"removed": 0, "conflicts": 0}
+    for index, item in enumerate(items):
+        key = fingerprint(item)
+        _, prev = kept.get(key, (None, None))
+        if prev is None:
+            kept[key] = (index, item)
+            continue
+        stats["removed"] += 1
+        if normalize(item["output"]) != normalize(prev["output"]):
+            stats["conflicts"] += 1
+            # 保留答案更完整的一条：多选 > 单选
+            if len(answer_letters(item["output"])) > len(
+                answer_letters(prev["output"])
+            ):
+                kept[key] = (index, item)
+    # 按原始下标还原顺序，保证结果可复现
+    result = [item for _, (_, item) in sorted(kept.items(), key=lambda kv: kv[1][0])]
+    stats["before"] = len(items)
+    stats["after"] = len(result)
+    return result, stats
+
+
+def split_by_background(items, ratio, rng):
+    """Splits whole case backgrounds together instead of item by item.
+
+    The bar exam often asks several sub-questions about one case; splitting item
+    by item would put the same case in both train and test, which flatters the
+    evaluation.
+    """
+    groups = {}
+    order = []
+    for item in items:
+        key = background_key(item)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(item)
+
+    rng.shuffle(order)  # 只打乱组间顺序，组内保持相邻
+
     total = len(items)
     ratio_sum = sum(ratio)
     n_train = total * ratio[0] // ratio_sum
     n_val = total * ratio[1] // ratio_sum
-    return items[:n_train], items[n_train : n_train + n_val], items[n_train + n_val :]
+
+    train, val, test = [], [], []
+    for key in order:
+        group = groups[key]
+        if len(train) < n_train:
+            train.extend(group)
+        elif len(val) < n_val:
+            val.extend(group)
+        else:
+            test.extend(group)
+    return train, val, test
 
 
 def main():
@@ -196,13 +310,22 @@ def main():
     n_multiple = sum(item["instruction"] == SYSTEM_PROMPT_MULTIPLE for item in items)
     print(f"Multiple-choice items: {n_multiple} / {len(items)}")
 
+    # 去重：同一道题只保留一条
+    if args.dedup:
+        items, stats = deduplicate(items)
+        print(
+            f"Deduplicated: {stats['before']} -> {stats['after']} "
+            f"(removed {stats['removed']}, conflicting answers {stats['conflicts']})"
+        )
+
     # 打乱顺序
-    random.shuffle(items)
+    rng = random.Random(args.seed)
+    rng.shuffle(items)
     if args.max_samples >= 0:
         items = items[: args.max_samples]
         print(f"Using the first {len(items)} shuffled samples (--max-samples)")
 
-    train, val, test = split_items(items, args.split_ratio)
+    train, val, test = split_by_background(items, args.split_ratio, rng)
 
     os.makedirs(args.dataset_dir, exist_ok=True)
     for split, data in (("train", train), ("val", val), ("test", test)):
