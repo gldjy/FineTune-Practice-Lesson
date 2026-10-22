@@ -64,7 +64,7 @@ poetry run python src/prepare_data.py --max-length 1280
 
 ### 训练 `src/train_qwen3.py`
 
-LoRA 微调，默认训练 1 轮，batch-size 2 × grad-accum 8。适配器存到 `output/law-qwen3/final`，日志写到 `logs/`：
+LoRA 微调，默认训练 1 轮，batch-size 4 × grad-accum 4（有效 batch 16）。适配器存到 `output/law-qwen3/final`，日志写到 `logs/`：
 
 ```bash
 # 从头训练（full 变体，默认）
@@ -83,6 +83,8 @@ poetry run python src/train_qwen3.py --epoch 2 --lr 1e-4
 ```
 
 显存不够时优先调小 `--batch-size` 并按倍数调大 `--grad-accum`，保持两者乘积不变，学习率就不用跟着改。
+
+在 8 GB NVIDIA 显卡上 batch 4 × grad-accum 4 是实测最佳权衡点，同样的有效 batch 16 下比 2 × 8 更快，但再往上到 8 × 2 会因为发生内存交换而更慢。
 
 ### 测试 `src/test_qwen3.py`
 

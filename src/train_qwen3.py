@@ -74,10 +74,10 @@ def parse_args():
     )
     parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
     parser.add_argument(
-        "--batch-size", type=int, default=2, help="Per-device train and eval batch size"
+        "--batch-size", type=int, default=4, help="Per-device train and eval batch size"
     )
     parser.add_argument(
-        "--grad-accum", type=int, default=8, help="Gradient accumulation steps"
+        "--grad-accum", type=int, default=4, help="Gradient accumulation steps"
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed")
     parser.add_argument(
