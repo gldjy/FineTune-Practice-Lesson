@@ -1,4 +1,4 @@
-"""Splits the DISC-Law-SFT exam items into train/val/test JSONL files."""
+"""Splits the DISC-Law-SFT exam items into letters-only train/val/test JSONL files."""
 
 import argparse
 import json
@@ -19,16 +19,16 @@ DEFAULT_SEED = 42
 DEFAULT_MAX_LENGTH = 640  # 超过这个 token 长度的样本会被丢掉
 
 SYSTEM_PROMPT_SINGLE = (
-    "你是一名法律知识问答助手。请阅读下面的法律单项选择题，"
+    "你是一名法律知识问答助手。请阅读下面的单项选择题，"
     "从 A、B、C、D 四个选项中选出唯一正确的答案。"
-    "只输出正确选项的字母和内容，不要解释，不可多选。"
+    "只输出正确选项的字母，不要解释，不可多选。"
 )
 
 # 源数据里近一半的题是多选题，答案区会列出多个正确选项
 SYSTEM_PROMPT_MULTIPLE = (
-    "你是一名法律知识问答助手。请阅读下面的法律多项选择题，"
-    "从 A、B、C、D 四个选项中选出所有正确的答案，正确答案可能有两个以上。"
-    "按字母顺序逐行输出所有正确选项的字母和内容，不要解释。"
+    "你是一名法律知识问答助手。请阅读下面的多项选择题，"
+    "从 A、B、C、D 四个选项中选出所有正确的答案，正确答案有两个以上。"
+    "按字母顺序连续输出所有正确选项的字母，不要解释。"
 )
 
 
@@ -53,7 +53,7 @@ def parse_split_ratio(value):
 def parse_args():
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Split the DISC-Law-SFT exam items into train/val/test JSONL files.",
+        description="Split the DISC-Law-SFT exam items into letters-only train/val/test JSONL files.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -285,18 +285,17 @@ def main():
     exam = df[df["id"].astype(str).str.startswith("exam", na=False)]
     print(f"Exam items found: {len(exam)}")
 
-    # 转成 instruction/input/output；多选题的答案区有多行，instruction 换成多选版本
+    # 转成 instruction/input/output；答案只留字母，单选和多选各用一套 instruction
     items = []
     for _, row in exam.iterrows():
-        output = parse_output(row["output"])
-        multiple = len(answer_letters(output)) > 1
+        letters = sorted(set(answer_letters(parse_output(row["output"]))))
         items.append(
             {
                 "instruction": (
-                    SYSTEM_PROMPT_MULTIPLE if multiple else SYSTEM_PROMPT_SINGLE
+                    SYSTEM_PROMPT_MULTIPLE if len(letters) > 1 else SYSTEM_PROMPT_SINGLE
                 ),
                 "input": parse_input(row["input"]),
-                "output": output,
+                "output": "".join(letters),
             }
         )
 

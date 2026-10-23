@@ -25,42 +25,56 @@
    poetry run modelscope download --dataset AI-ModelScope/DISC-Law-SFT --local_dir ./datasets/DISC-Law-SFT
    ```
 
-7. 生成两个数据集变体，后面的脚本都用 `--dataset-dir` 指向其中一个（见[脚本用法](#脚本用法)）：
+7. 生成三个数据集变体，后面的脚本都用 `--dataset-dir` 指向其中一个（见[脚本用法](#脚本用法)）：
    ```bash
-   # full：21009 条、17:1:2，正经训练和评测用
+   # full：21006 条、17:1:2，正经训练和评测用
    poetry run python src/prepare_data.py
 
-   # mini：1000 条、8:1:1，几十秒跑通流程用
-   poetry run python src/prepare_data.py --dataset-dir datasets/mini --max-samples 1000 --split-ratio 8,1,1
+   # medium：6000 条、17:1:2，中等规模对照实验用
+   poetry run python src/prepare_data.py --dataset-dir datasets/medium --max-samples 6000
+
+   # mini：2000 条、17:1:2，几十秒跑通整个流程用
+   poetry run python src/prepare_data.py --dataset-dir datasets/mini --max-samples 2000
    ```
 
 ## 脚本用法
 
 三个脚本都在 `src/` 下，用 `poetry run python src/<脚本名>.py` 运行。
 
-数据集按目录分成两个变体，三个脚本都用 `--dataset-dir` 指向其中一个。目录里的 `*train*.jsonl` / `*val*.jsonl`（也认 `*dev*`）/ `*test*.jsonl` 由脚本自动识别，不用写具体文件名：
+数据集按目录分成三个变体，三个脚本都用 `--dataset-dir` 指向其中一个。目录里的 `*train*.jsonl` / `*val*.jsonl`（也认 `*dev*`）/ `*test*.jsonl` 由脚本自动识别，不用写具体文件名：
 
-| 变体 | 目录（默认） | 生成方式 | 规模与用途 |
-| --- | --- | --- | --- |
-| full | `datasets/full/` | `prepare_data.py` 默认参数 | 21009 条、17:1:2，正经训练和评测 |
-| mini | `datasets/mini/` | 加 `--max-samples 1000 --split-ratio 8,1,1` | 1000 条、8:1:1，几十秒跑通整个流程 |
+| 变体 | 目录 | 一键生成命令 | 规模（train / val / test） | 用途 |
+| --- | --- | --- | --- | --- |
+| full | `datasets/full/` | `poetry run python src/prepare_data.py` | 21006 = 17855 / 1050 / 2101 | 正经训练和评测 |
+| medium | `datasets/medium/` | `poetry run python src/prepare_data.py --dataset-dir datasets/medium --max-samples 6000` | 6000 = 5100 / 300 / 600 | 中等规模对照实验 |
+| mini | `datasets/mini/` | `poetry run python src/prepare_data.py --dataset-dir datasets/mini --max-samples 2000` | 2000 = 1700 / 100 / 200 | 几十秒跑通整个流程 |
 
 ### 准备数据 `src/prepare_data.py`
 
-读取 `datasets/DISC-Law-SFT/DISC-Law-SFT-Pair.csv` 里的法律选择题，清洗题面后打乱切分，输出 `law_train.jsonl`、`law_val.jsonl`、`law_test.jsonl`：
+读取 `datasets/DISC-Law-SFT/DISC-Law-SFT-Pair.csv` 里的法律选择题，按下面的流水线生成 `law_train.jsonl`、`law_val.jsonl`、`law_test.jsonl`：
+
+1. 丢掉 chat 格式下超过 `--max-length`（默认 640）token 的长样本；
+2. 去重：同一道题只留一条。指纹取"问题句尾部 110 字 + 全部选项"，所以对题号前缀和案例背景的截取长度都不敏感；同一指纹下答案不一致时保留正确选项更多的那条，`--no-dedup` 可以关掉这一步；
+3. 打乱顺序，`--max-samples` 取前 N 条；
+4. 按案例背景分组切分：同一个案例背景下的多道小问整组进同一个子集，避免同一案例同时出现在训练和测试里。
+
+**输出只有字母**：`output` 是排序去重后的选项字母（单选形如 `C`，多选形如 `ABD`），不抄选项原文；单选和多选各用一套 instruction。这是出于评测效率和显存开销优化的考虑。
 
 ```bash
-# full 变体：输出到 datasets/full，丢掉长样本，其余按 17:1:2 切分
+# 三个变体（都是 17:1:2，默认参数生成的即 full）
 poetry run python src/prepare_data.py
+poetry run python src/prepare_data.py --dataset-dir datasets/medium --max-samples 6000
+poetry run python src/prepare_data.py --dataset-dir datasets/mini --max-samples 2000
 
-# mini 变体：打乱后取前 1000 条，按 8:1:1 切
-poetry run python src/prepare_data.py --dataset-dir datasets/mini --max-samples 1000 --split-ratio 8,1,1
-
-# 更换丢弃长样本的长度阈值
+# 换丢弃长样本的阈值、换切分比例、关掉去重
 poetry run python src/prepare_data.py --max-length 1280
+poetry run python src/prepare_data.py --split-ratio 8,1,1
+poetry run python src/prepare_data.py --no-dedup
 ```
 
-源数据里约一半是多项选择题（答案区会列出多个正确选项），脚本按答案区行数区分题型，单选和多选各用一套 instruction，多选题的答案原样保留成多行。
+源数据里约一半是多项选择题，脚本按正确选项字母的个数区分题型，让模型只回字母。
+
+三个变体取的是同一洗牌序的前 N 条，所以 `mini ⊂ medium ⊂ full`。但每个变体的切分是各自独立做的，一个变体的测试集有可能落在另一个变体的训练集里。所以训练和评测要用同一个变体，别拿 full 训练出的模型去评 mini 或 medium 的测试集。
 
 ### 训练 `src/train_qwen3.py`
 
