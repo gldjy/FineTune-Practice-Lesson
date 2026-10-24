@@ -72,7 +72,9 @@ def parse_args():
     parser.add_argument(
         "--epoch", type=int, default=1, help="Number of training epochs"
     )
-    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
+    # 默认值取自 docs/opt.md 的调参结论：medium 变体上 3e-4 的验证损失最低（0.5069），
+    # 2e-4 次之；full 变体的步数是 medium 的 3.5 倍，需要时可退回 2e-4 对照
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument(
         "--batch-size", type=int, default=4, help="Per-device train and eval batch size"
     )
