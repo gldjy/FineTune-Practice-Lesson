@@ -130,3 +130,25 @@ print(d.correct.mean())
 ```
 
 full 的测试集跑一遍会比较久；想先小规模验证就加 `--dataset-dir datasets/mini`。
+
+### 可视化 `src/visual_*.py`
+
+三个画图脚本共用 `src/visual_style.py` 里的配色和坐标轴样式，只读训练与评测产物，不改动它们：
+
+```bash
+# 训练曲线（训练损失 / 验证损失 / 学习率）：读存档点的 trainer_state.json，
+# 或 tune_qwen3.py 留下的运行日志，多个 --log 可以叠在一起比较
+poetry run python src/visual_training.py \
+  --state output/law-qwen3/checkpoint-1119/trainer_state.json
+
+# 超参扫描：验证损失 + 代理准确率，--where 用来固定其它维度
+poetry run python src/visual_sweep.py \
+  --runs output/opt/runs.jsonl --axis lr --where epoch=1
+
+# 测试集对比：多个模型在同一批测试样本上的总体准确率和单选/多选拆分
+poetry run python src/visual_compare.py \
+  --run "base=logs/test-base.jsonl" \
+  --run "tuned=logs/test-tuned.jsonl"
+```
+
+调参过程、指标定义和结论见 [docs/opt.md](docs/opt.md)。
