@@ -19,8 +19,8 @@ DEFAULT_SEED = 42
 MAX_NEW_TOKENS = 64
 
 # 答案区/模型输出的选项行都以「字母 + 分隔符」开头，多选题会有多行
-CHOICE_LINE = re.compile(r"^\s*([A-D]+)(?=[\s\.、．,，:：]|$)")
-LOOSE_LETTER = re.compile(r"(?<![A-Za-z])([A-D])(?![A-Za-z])")
+CHOICE_LINE = re.compile(r"^\s*([A-H]+)(?=[\s\.、．,，:：]|$)")
+LOOSE_LETTER = re.compile(r"(?<![A-Za-z])([A-H])(?![A-Za-z])")
 
 
 def parse_args():
